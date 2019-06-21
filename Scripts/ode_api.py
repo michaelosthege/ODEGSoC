@@ -15,6 +15,9 @@ class ODEModel(object):
         self.n_odeparams = n_odeparams
         self.augmented_system = _augment_system(self.odefunc)
 
+
+        #ODE solution is a vector of dimension n
+        #Sensitivities are a matrix of dimension nxm
         self.n = self.n_states
         self.m = self.n_odeparams + self.n_ivs
 

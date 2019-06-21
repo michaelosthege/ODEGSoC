@@ -80,3 +80,7 @@ with pm.Model() as LV_model:
     Y_obs = pm.Lognormal('Y_obs', mu=pm.math.log(forward), sd=sigma, observed=Y)
     
     trace = pm.sample(1500, tune=1000, init='adapt_diag')
+
+pm.traceplot(trace)
+
+plt.show()
