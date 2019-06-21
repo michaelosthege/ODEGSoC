@@ -7,9 +7,11 @@ THEANO_FLAGS='optimizer=fast_compile'
 
 class ODEModel(object):
 
-    def __init__(self, odefunc, times, n_states, n_ivs, n_odeparams):
+    def __init__(self, odefunc, y0, t0, times, n_states, n_ivs, n_odeparams):
 
         self._odefunc = odefunc
+        self._t0 = t0
+        self._y0 = y0
         self._times = times
         self._n_states = n_states
         self._n_ivs = n_ivs
@@ -84,16 +86,19 @@ class ODEModel(object):
         #for the augmented system (ODE + sensitivity ODe)
         y0 = np.concatenate([y_ic, sens_ic.ravel()])
 
+        #Ensure the indicated inital time is the start of the integration
+        augmented_times = np.insert(self._times, self._t0, 0)
+
         #Integrate
         soln = scipy.integrate.odeint(self.system,
                     y0=y0,
-                    t = self._times,
+                    t = augmented_times,
                     args = tuple([parameters]))
 
         #Reshaoe the sensitivities so that there is an nxm matrix for each 
         #timestep
-        y = soln[:, :self._n]
-        sens = soln[:, self._n:].reshape((len(self._times),self._n, self._m) )
+        y = soln[1:, :self._n]
+        sens = soln[1:, self._n:].reshape((len(self._times),self._n, self._m) )
 
         return y,sens
 
