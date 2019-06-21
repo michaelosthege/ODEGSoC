@@ -7,19 +7,25 @@ THEANO_FLAGS='optimizer=fast_compile'
 
 class ODEModel(object):
 
-    def __init__(self, odefunc, n_states, n_ivs, n_odeparams):
+    def __init__(self, odefunc, times, n_states, n_ivs, n_odeparams):
 
-        self.odefunc = odefunc
-        self.n_states = n_states
-        self.n_ivs = n_ivs
-        self.n_odeparams = n_odeparams
-        self.augmented_system = _augment_system(self.odefunc)
+        self._odefunc = odefunc
+        self._times = times
+        self._n_states = n_states
+        self._n_ivs = n_ivs
+        self._n_odeparams = n_odeparams
+        self._augmented_system = _augment_system(self._odefunc)
 
 
         #ODE solution is a vector of dimension n
         #Sensitivities are a matrix of dimension nxm
-        self.n = self.n_states
-        self.m = self.n_odeparams + self.n_ivs
+        self._n = self._n_states
+        self._m = self._n_odeparams + self._n_ivs
+
+        #Cached parameters
+        self._cachedParam = None
+        self._cachedSens = None
+        self._cachedState = None
 
     def system(self,Y,t,p):
 
@@ -37,19 +43,19 @@ class ODEModel(object):
         """
 
 
-        dydt, sens = self.augmented_system(Y[:self.n], 
+        dydt, sens = self._augmented_system(Y[:self._n], 
                                             t,
                                             p,
-                                            Y[self.n:],
-                                            self.n,
-                                            self.m
+                                            Y[self._n:],
+                                            self._n,
+                                            self._m
                                             )
 
         derivatives =  np.concatenate([dydt,sens])
 
         return derivatives
 
-    def simulate(self, parameters, times):
+    def simulate(self, parameters):
 
         '''
         This function returns solutions and sensitivities of the ODE,
@@ -65,14 +71,14 @@ class ODEModel(object):
         '''
 
         #Set up the inital condition for the sensitivities
-        sens_ic = np.zeros((self.n, self.m))
+        sens_ic = np.zeros((self._n, self._m))
 
         #Last n columns correspond to senstivity for inital condition
         #So last n columns form identity matrix
-        sens_ic[:, -self.n:] = np.eye(self.n)
+        sens_ic[:, -self._n:] = np.eye(self._n)
 
         #Create an initial condition for the system
-        y_ic = parameters[-self.n:]
+        y_ic = parameters[-self._n:]
 
         #Concatenate the two inital conditions to form the initial condition
         #for the augmented system (ODE + sensitivity ODe)
@@ -81,15 +87,38 @@ class ODEModel(object):
         #Integrate
         soln = scipy.integrate.odeint(self.system,
                     y0=y0,
-                    t = times,
+                    t = self._times,
                     args = tuple([parameters]))
 
         #Reshaoe the sensitivities so that there is an nxm matrix for each 
         #timestep
-        y = soln[:, :self.n]
-        sens = soln[:, self.n:].reshape((len(times),self.n, self.m) )
+        y = soln[:, :self._n]
+        sens = soln[:, self._n:].reshape((len(self._times),self._n, self._m) )
 
-        return [y,sens]
+        return y,sens
+
+    def cached_solver(self, parameters):
+
+        if np.all(parameters==self._cachedParam):
+            y, sens = self._cachedState, self._cachedSens
+            
+        else:
+            y, sens = self.simulate(parameters)
+        
+        return y, sens
+
+    def state(self, parameters):
+
+        params = np.array(parameters,dtype=np.float64)
+        y, sens = self.cached_solver(params)
+        self._cachedState, self._cachedSens, self._cachedParam = y, sens, parameters
+        return y.reshape((self._n_states*len(y),))
+
+    def numpy_vsp(self,x, g):    
+        sens = self.cached_solver(np.array(x,dtype=np.float64))[1]
+        sens = sens.reshape((self._n_states*len(self._times),len(x)))
+        return sens.T.dot(g)
+
 
 class ODEGradop(theano.Op):
     def __init__(self, numpy_vsp):
@@ -110,9 +139,9 @@ class ODEGradop(theano.Op):
         
 class ODEop(theano.Op):
 
-    def __init__(self, state, numpy_vsp):
-        self._state = state
-        self._numpy_vsp = numpy_vsp
+    def __init__(self, odemodel):
+        self._state = odemodel.state
+        self._numpy_vsp = odemodel.numpy_vsp
 
     def make_node(self, x):
         x = theano.tensor.as_tensor_variable(x)
