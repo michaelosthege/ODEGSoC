@@ -25,9 +25,9 @@ class ODEModel(object):
         self._m = self._n_odeparams + self._n_ivs
 
         #Cached parameters
-        self._cachedParam = None
-        self._cachedSens = None
-        self._cachedState = None
+        self._cachedParam = np.zeros(self._m)
+        self._cachedSens = np.zeros((len(self._times), self._n, self._m))
+        self._cachedState = np.zeros((len(self._times), self._n))
 
     def system(self,Y,t,p):
 
