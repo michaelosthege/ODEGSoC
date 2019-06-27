@@ -7,27 +7,24 @@ THEANO_FLAGS='optimizer=fast_compile'
 
 class ODEModel(object):
 
-    def __init__(self, odefunc, y0, t0, times, n_states, n_ivs, n_odeparams):
+    def __init__(self, odefunc, y0, t0, times, n_states, n_ics, n_odeparams):
 
         self._odefunc = odefunc
         self._t0 = t0
         self._y0 = y0
         self._times = times
         self._n_states = n_states
-        self._n_ivs = n_ivs
+        self._n_ics = n_ics
         self._n_odeparams = n_odeparams
-        self._augmented_system = _augment_system(self._odefunc)
+        self._augmented_system = augment_system(self._odefunc)
 
 
         #ODE solution is a vector of dimension n
         #Sensitivities are a matrix of dimension nxm
         self._n = self._n_states
-        self._m = self._n_odeparams + self._n_ivs
+        self._m = self._n_odeparams + self._n_ics
 
-        #Cached parameters
-        self._cachedParam = np.zeros(self._m)
-        self._cachedSens = np.zeros((len(self._times), self._n, self._m))
-        self._cachedState = np.zeros((len(self._times), self._n))
+        #TODO:  Add cached solver to increase speed.
 
     def system(self,Y,t,p):
 
@@ -102,25 +99,14 @@ class ODEModel(object):
 
         return y,sens
 
-    def cached_solver(self, parameters):
-
-        if np.all(parameters==self._cachedParam):
-            y, sens = self._cachedState, self._cachedSens
-            
-        else:
-            y, sens = self.simulate(parameters)
-        
-        return y, sens
-
     def state(self, parameters):
 
         params = np.array(parameters,dtype=np.float64)
-        y, sens = self.cached_solver(params)
-        self._cachedState, self._cachedSens, self._cachedParam = y, sens, parameters
+        y, sens = self.simulate(params)
         return y.reshape((self._n_states*len(y),))
 
     def numpy_vsp(self,x, g):    
-        sens = self.cached_solver(np.array(x,dtype=np.float64))[1]
+        sens = self.simulate(np.array(x,dtype=np.float64))[1]
         sens = sens.reshape((self._n_states*len(self._times),len(x)))
         return sens.T.dot(g)
 
@@ -172,7 +158,7 @@ class ODEop(theano.Op):
 
 
 
-def _augment_system(ode_func):
+def augment_system(ode_func):
     '''Function to create augmented system.
 
     Take a function which specifies a set of differential equations and return
@@ -189,8 +175,8 @@ def _augment_system(ode_func):
 
     #Shapes for the dydp dmatrix
     #TODO: Should this be int64 or other dtype?
-    t_n = tt.scalar('n', dtype = 'int32')
-    t_m = tt.scalar('m', dtype = 'int32')
+    t_n = tt.scalar('n', dtype = 'int64')
+    t_m = tt.scalar('m', dtype = 'int64')
 
     #Present state of the system
     t_y = tt.dvector('y')
