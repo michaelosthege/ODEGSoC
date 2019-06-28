@@ -7,16 +7,15 @@ THEANO_FLAGS='optimizer=fast_compile'
 
 class ODEModel(object):
 
-    def __init__(self, odefunc, y0, t0, times, n_states, n_ics, n_odeparams):
+    def __init__(self, odefunc, t0, times, n_states, n_ics, n_odeparams):
 
         self._odefunc = odefunc
         self._t0 = t0
-        self._y0 = y0
         self._times = times
         self._n_states = n_states
         self._n_ics = n_ics
         self._n_odeparams = n_odeparams
-        self._augmented_system = augment_system(self._odefunc)
+        self._augmented_system = augment_system(odefunc)
 
 
         #ODE solution is a vector of dimension n
@@ -24,12 +23,15 @@ class ODEModel(object):
         self._n = self._n_states
         self._m = self._n_odeparams + self._n_ics
 
-        #TODO:  Add cached solver to increase speed.
+        #TODO:  Add cached solver to increase speed.  Something presently wrong.
+        self._cached_parameters = np.zeros(self._m)
+        self._cached_sens = np.zeros((len(self._times),self._n, self._m))
+        self._cached_y = np.zeros((len(self._times), self._n))
 
     def system(self,Y,t,p):
 
         """
-        This is the function that wull be passed to odeint.
+        This is the function that will be passed to odeint.
         Solves both ODE and sensitivities
 
         Args:
@@ -99,64 +101,34 @@ class ODEModel(object):
 
         return y,sens
 
+    def cached_simulate(self, parameters):
+        
+        '''Error here somewhere'''
+        if np.all(parameters == self._cached_parameters):
+            y = self._cached_y
+            sens = self._cached_sens
+        else:
+            y, sens = self.simulate(parameters)
+
+        return y,sens
+
     def state(self, parameters):
 
         params = np.array(parameters,dtype=np.float64)
-        y, sens = self.simulate(params)
+        y, sens = self.cached_simulate(params)
+
+        self._cached_y = y
+        self._cached_parameters = params
+        self._cached_sens = sens
+
         return y.reshape((self._n_states*len(y),))
 
-    def numpy_vsp(self,x, g):    
-        sens = self.simulate(np.array(x,dtype=np.float64))[1]
-        sens = sens.reshape((self._n_states*len(self._times),len(x)))
+    def numpy_vsp(self,parameters, g):
+
+        params = np.array(parameters,dtype=np.float64)    
+        sens = self.cached_simulate(params)[1]
+        sens = sens.reshape((self._n_states*len(self._times),len(params)))
         return sens.T.dot(g)
-
-
-class ODEGradop(theano.Op):
-    def __init__(self, numpy_vsp):
-        self._numpy_vsp = numpy_vsp
-
-    def make_node(self, x, g):
-        x = theano.tensor.as_tensor_variable(x)
-        g = theano.tensor.as_tensor_variable(g)
-        node = theano.Apply(self, [x, g], [g.type()])
-        return node
-
-    def perform(self, node, inputs_storage, output_storage):
-        x = inputs_storage[0]
-
-        g = inputs_storage[1]
-        out = output_storage[0]
-        out[0] = self._numpy_vsp(x, g)       # get the numerical VSP
-        
-class ODEop(theano.Op):
-
-    def __init__(self, odemodel):
-        self._state = odemodel.state
-        self._numpy_vsp = odemodel.numpy_vsp
-
-    def make_node(self, x):
-        x = theano.tensor.as_tensor_variable(x)
-
-        return theano.Apply(self, [x], [x.type()])
-
-    def perform(self, node, inputs_storage, output_storage):
-        x = inputs_storage[0]
-        out = output_storage[0]
-        
-        out[0] = self._state(x)               # get the numerical solution of ODE states
-
-    def grad(self, inputs, output_grads):
-        x = inputs[0]
-        g = output_grads[0]
-
-        grad_op = ODEGradop(self._numpy_vsp)  # pass the VSP when asked for gradient 
-        grad_op_apply = grad_op(x, g)
-        
-        return [grad_op_apply]
-
-
-
-
 
 def augment_system(ode_func):
     '''Function to create augmented system.
@@ -216,3 +188,48 @@ def augment_system(ode_func):
             on_unused_input='ignore')
 
     return system
+
+
+class ODEGradop(theano.Op):
+    def __init__(self, numpy_vsp):
+        self._numpy_vsp = numpy_vsp
+
+    def make_node(self, x, g):
+        x = theano.tensor.as_tensor_variable(x)
+        g = theano.tensor.as_tensor_variable(g)
+        node = theano.Apply(self, [x, g], [g.type()])
+        return node
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+
+        g = inputs_storage[1]
+        out = output_storage[0]
+        out[0] = self._numpy_vsp(x, g)       # get the numerical VSP
+        
+class ODEop(theano.Op):
+
+    def __init__(self, odemodel):
+        self._state = odemodel.state
+        self._numpy_vsp = odemodel.numpy_vsp
+
+    def make_node(self, x):
+        x = theano.tensor.as_tensor_variable(x)
+
+        return theano.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+        out = output_storage[0]
+        
+        out[0] = self._state(x)               # get the numerical solution of ODE states
+
+    def grad(self, inputs, output_grads):
+        x = inputs[0]
+        g = output_grads[0]
+
+        grad_op = ODEGradop(self._numpy_vsp)  # pass the VSP when asked for gradient 
+        grad_op_apply = grad_op(x, g)
+        
+        return [grad_op_apply]
+
