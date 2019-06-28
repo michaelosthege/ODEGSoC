@@ -7,129 +7,83 @@ THEANO_FLAGS='optimizer=fast_compile'
 
 class ODEModel(object):
 
-    def __init__(self, odefunc, t0, times, n_states, n_ics, n_odeparams):
 
-        self._odefunc = odefunc
-        self._t0 = t0
-        self._times = times
-        self._n_states = n_states
-        self._n_ics = n_ics
-        self._n_odeparams = n_odeparams
-        self._augmented_system = augment_system(odefunc)
+    def __init__(self, func, t0, times, n_states, n_odeparams):
+        
+        self.func = func
+        self.t0 = t0
+        self.times = times
+        self.n_states = n_states
+        self.n_odeparams = n_odeparams
 
+        self.n = n_states
+        self.m = n_odeparams + n_states
 
-        #ODE solution is a vector of dimension n
-        #Sensitivities are a matrix of dimension nxm
-        self._n = self._n_states
-        self._m = self._n_odeparams + self._n_ics
+        self.augmented_times = np.insert(times, t0, 0)
+        self.augmented_func = augment_system(func)
+        self.sens_ic = self.make_sens_ic()
 
-        #TODO:  Add cached solver to increase speed.  Something presently wrong.
-        self._cached_parameters = np.zeros(self._m)
-        self._cached_sens = np.zeros((len(self._times),self._n, self._m))
-        self._cached_y = np.zeros((len(self._times), self._n))
+    def make_sens_ic(self):
 
-    def system(self,Y,t,p):
+        #The sensitivity matrix will always have consistent form.
+        #If the first n_odeparams entries of the parameters vector in the simulate call
+        #correspond to ode paramaters, then the first n_odeparams columns in the sensitivity matrix will be 0
+        sens_matrix = np.zeros((self.n, self.m))
 
+        #If the last n_states entrues of the paramters vector in the simulate call
+        #correspond to initial conditions of the system,
+        #then the last n_states columns of the sensitivity matrix should form an identity matrix
+        sens_matrix[:,-self.n_states] = np.eye(self.n_states)
+
+        #We need the sensitivity matrix to be a vector (see augmented_function)
+        #Ravel and return
+        dydp = sens_matrix.ravel()
+        return dydp
+
+    def make_state_ic(self, parameters):
+
+        #Convience function
+        return parameters[self.n_odeparams:]
+
+    def system(self, Y,t,p):
         """
-        This is the function that will be passed to odeint.
+        This is the function that wull be passed to odeint.
         Solves both ODE and sensitivities
-
         Args:
             Y (vector): current state and current gradient state
             t (scalar): current time
             p (vector): parameters
-
         Returns:
             derivatives (vector): derivatives of state and gradient
         """
 
-
-        dydt, sens = self._augmented_system(Y[:self._n], 
-                                            t,
-                                            p,
-                                            Y[self._n:],
-                                            self._n,
-                                            self._m
-                                            )
-
-        derivatives =  np.concatenate([dydt,sens])
-
+        dydt, ddt_dydp = self.augmented_func(Y[:self.n], t, p, Y[self.n:], self.n, self.m)
+        derivatives = np.concatenate([dydt,ddt_dydp])
         return derivatives
+
 
     def simulate(self, parameters):
 
-        '''
-        This function returns solutions and sensitivities of the ODE,
-        evaluated at times and parameterized by parameters.
+        #Initial condition comprised of state initial conditions and raveled sensitivity matrix
+        y0 = np.concatenate([self.make_state_ic(parameters),self.sens_ic])
 
-        Inputs:
-            times(array): Times to evaluate the solution of the ODE
-            parameters(array): Parameters for ODE.  Last entries should be
-                               initial conditions
-
-        Returns:
-            sol(array): Solution of ODE
-        '''
-
-        #Set up the inital condition for the sensitivities
-        sens_ic = np.zeros((self._n, self._m))
-
-        #Last n columns correspond to senstivity for inital condition
-        #So last n columns form identity matrix
-        sens_ic[:, -self._n:] = np.eye(self._n)
-
-        #Create an initial condition for the system
-        y_ic = parameters[-self._n:]
-
-        #Concatenate the two inital conditions to form the initial condition
-        #for the augmented system (ODE + sensitivity ODe)
-        y0 = np.concatenate([y_ic, sens_ic.ravel()])
-
-        #Ensure the indicated inital time is the start of the integration
-        augmented_times = np.insert(self._times, self._t0, 0)
-
-        #Integrate
-        soln = scipy.integrate.odeint(self.system,
-                    y0=y0,
-                    t = augmented_times,
-                    args = tuple([parameters]))
-
-        #Reshaoe the sensitivities so that there is an nxm matrix for each 
-        #timestep
-        y = soln[1:, :self._n]
-        sens = soln[1:, self._n:].reshape((len(self._times),self._n, self._m) )
-
-        return y,sens
-
-    def cached_simulate(self, parameters):
+        #perform the integration
+        sol= scipy.integrate.odeint(func = self.system,
+                                    y0 = y0,
+                                    t = self.augmented_times,
+                                    args = tuple([parameters]))
+        #The solution
+        y = sol[1:,:self.n_states]
         
-        '''Error here somewhere'''
-        if np.all(parameters == self._cached_parameters):
-            y = self._cached_y
-            sens = self._cached_sens
-        else:
-            y, sens = self.simulate(parameters)
+        #The sensitivities, reshaped to be a sequence of matrices
+        sens = sol[1:, self.n_states:].reshape(len(self.times), self.n, self.m)
 
-        return y,sens
+        return y, sens
 
-    def state(self, parameters):
 
-        params = np.array(parameters,dtype=np.float64)
-        y, sens = self.cached_simulate(params)
 
-        self._cached_y = y
-        self._cached_parameters = params
-        self._cached_sens = sens
 
-        return y.reshape((self._n_states*len(y),))
-
-    def numpy_vsp(self,parameters, g):
-
-        params = np.array(parameters,dtype=np.float64)    
-        sens = self.cached_simulate(params)[1]
-        sens = sens.reshape((self._n_states*len(self._times),len(params)))
-        return sens.T.dot(g)
-
+    
 def augment_system(ode_func):
     '''Function to create augmented system.
 
@@ -188,48 +142,4 @@ def augment_system(ode_func):
             on_unused_input='ignore')
 
     return system
-
-
-class ODEGradop(theano.Op):
-    def __init__(self, numpy_vsp):
-        self._numpy_vsp = numpy_vsp
-
-    def make_node(self, x, g):
-        x = theano.tensor.as_tensor_variable(x)
-        g = theano.tensor.as_tensor_variable(g)
-        node = theano.Apply(self, [x, g], [g.type()])
-        return node
-
-    def perform(self, node, inputs_storage, output_storage):
-        x = inputs_storage[0]
-
-        g = inputs_storage[1]
-        out = output_storage[0]
-        out[0] = self._numpy_vsp(x, g)       # get the numerical VSP
-        
-class ODEop(theano.Op):
-
-    def __init__(self, odemodel):
-        self._state = odemodel.state
-        self._numpy_vsp = odemodel.numpy_vsp
-
-    def make_node(self, x):
-        x = theano.tensor.as_tensor_variable(x)
-
-        return theano.Apply(self, [x], [x.type()])
-
-    def perform(self, node, inputs_storage, output_storage):
-        x = inputs_storage[0]
-        out = output_storage[0]
-        
-        out[0] = self._state(x)               # get the numerical solution of ODE states
-
-    def grad(self, inputs, output_grads):
-        x = inputs[0]
-        g = output_grads[0]
-
-        grad_op = ODEGradop(self._numpy_vsp)  # pass the VSP when asked for gradient 
-        grad_op_apply = grad_op(x, g)
-        
-        return [grad_op_apply]
 
