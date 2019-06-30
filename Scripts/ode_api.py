@@ -23,6 +23,10 @@ class ODEModel(object):
         self.augmented_func = augment_system(func)
         self.sens_ic = self.make_sens_ic()
 
+        self.cached_y = None
+        self.cached_sens = None
+        self.cached_parameters = None
+
     def make_sens_ic(self):
 
         #The sensitivity matrix will always have consistent form.
@@ -80,8 +84,68 @@ class ODEModel(object):
 
         return y, sens
 
+    def cached_simulate(self, parameters):
+
+        if np.all(np.array(parameters) == self.cached_parameters):
+            y = self.cached_y
+            sens = self.cached_sens
+        else:
+            y,sens = self.simulate(np.array(parameters))
+
+        return y,sens
+
+    def state(self,x):
+        y, sens = self.cached_simulate(np.array(x,dtype=np.float64))
+        self.cached_y, self.cached_sens, self.cached_parameters = y, sens, x
+        return y.ravel()
+
+    def numpy_vsp(self,x, g):    
+        numpy_sens = self.cached_simulate(np.array(x,dtype=np.float64))[1].reshape((self.n_states*len(self.times),len(x)))
+        return numpy_sens.T.dot(g)
 
 
+class ODEGradop(theano.Op):
+    def __init__(self, numpy_vsp):
+        self._numpy_vsp = numpy_vsp
+
+    def make_node(self, x, g):
+        x = theano.tensor.as_tensor_variable(x)
+        g = theano.tensor.as_tensor_variable(g)
+        node = theano.Apply(self, [x, g], [g.type()])
+        return node
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+
+        g = inputs_storage[1]
+        out = output_storage[0]
+        out[0] = self._numpy_vsp(x, g)       # get the numerical VSP
+
+class ODEop(theano.Op):
+
+    def __init__(self, ode_model):
+        self._state = ode_model.state
+        self._numpy_vsp = ode_model.numpy_vsp
+
+    def make_node(self, x):
+        x = theano.tensor.as_tensor_variable(x)
+
+        return theano.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+        out = output_storage[0]
+        
+        out[0] = self._state(x)               # get the numerical solution of ODE states
+
+    def grad(self, inputs, output_grads):
+        x = inputs[0]
+        g = output_grads[0]
+
+        grad_op = ODEGradop(self._numpy_vsp)  # pass the VSP when asked for gradient 
+        grad_op_apply = grad_op(x, g)
+        
+        return [grad_op_apply]
 
     
 def augment_system(ode_func):
