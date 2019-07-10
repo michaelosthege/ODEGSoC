@@ -20,7 +20,7 @@ class ODEModel(object):
         self.m = n_odeparams + n_states
 
         self.augmented_times = np.insert(times, t0, 0)
-        self.augmented_func = augment_system(func)
+        self.augmented_func = augment_system(func, self.n, self.m)
         self.sens_ic = self.make_sens_ic()
 
         self.cached_y = None
@@ -61,7 +61,7 @@ class ODEModel(object):
             derivatives (vector): derivatives of state and gradient
         """
 
-        dydt, ddt_dydp = self.augmented_func(Y[:self.n], t, p, Y[self.n:], self.n, self.m)
+        dydt, ddt_dydp = self.augmented_func(Y[:self.n], t, p, Y[self.n:])
         derivatives = np.concatenate([dydt,ddt_dydp])
         return derivatives
 
@@ -145,7 +145,7 @@ class ODEop(theano.Op):
         return [grad_op_apply]
 
     
-def augment_system(ode_func):
+def augment_system(ode_func,t_n, t_m):
     '''Function to create augmented system.
 
     Take a function which specifies a set of differential equations and return
@@ -162,8 +162,8 @@ def augment_system(ode_func):
 
     #Shapes for the dydp dmatrix
     #TODO: Should this be int64 or other dtype?
-    t_n = tt.scalar('n', dtype = 'int64')
-    t_m = tt.scalar('m', dtype = 'int64')
+    # t_n = tt.scalar('n', dtype = 'int64')
+    # t_m = tt.scalar('m', dtype = 'int64')
 
     #Present state of the system
     t_y = tt.dvector('y')
@@ -198,7 +198,7 @@ def augment_system(ode_func):
 
 
     system = theano.function(
-            inputs=[t_y, t_t, t_p, dydp_vec, t_n, t_m],
+            inputs=[t_y, t_t, t_p, dydp_vec],
             outputs=[f_tensor, ddt_dydp],
             on_unused_input='ignore')
 
