@@ -86,13 +86,10 @@ class ODEModel(object):
 
     def cached_simulate(self, parameters):
 
-        if np.all(np.array(parameters) == self.cached_parameters):
-            y = self.cached_y
-            sens = self.cached_sens
+        if np.array_equal(np.array(parameters), self.cached_parameters):
+            return self.cached_y, self.cached_sens
         else:
-            y,sens = self.simulate(np.array(parameters))
-
-        return y,sens
+            return self.simulate(np.array(parameters))
 
     def state(self,x):
         y, sens = self.cached_simulate(np.array(x,dtype=np.float64))
