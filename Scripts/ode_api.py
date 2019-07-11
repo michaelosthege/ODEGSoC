@@ -5,7 +5,7 @@ import scipy
 THEANO_FLAGS='optimizer=fast_compile'
 
 
-class ODEModel(object):
+class ODEModel(theano.Op):
 
 
     def __init__(self, func, t0, times, n_states, n_odeparams):
@@ -99,6 +99,29 @@ class ODEModel(object):
     def numpy_vsp(self,x, g):    
         numpy_sens = self.cached_simulate(np.array(x,dtype=np.float64))[1].reshape((self.n_states*len(self.times),len(x)))
         return numpy_sens.T.dot(g)
+
+    def make_node(self, x):
+        x = theano.tensor.as_tensor_variable(x)
+
+        return theano.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+        out = output_storage[0]
+
+        # get the numerical solution of ODE states
+        out[0] = self.state(x)
+
+    def grad(self, inputs, output_grads):
+        x = inputs[0]
+        g = output_grads[0]
+
+        # pass the VSP when asked for gradient
+        grad_op = ODEGradop(self.numpy_vsp)
+        grad_op_apply = grad_op(x, g)
+
+        return [grad_op_apply]
+
 
 
 class ODEGradop(theano.Op):
