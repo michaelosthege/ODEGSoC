@@ -5,7 +5,7 @@ import scipy
 THEANO_FLAGS='optimizer=fast_compile'
 
 
-class ODEModel(object):
+class ODEModel(theano.Op):
 
 
     def __init__(self, func, t0, times, n_states, n_odeparams):
@@ -20,7 +20,7 @@ class ODEModel(object):
         self.m = n_odeparams + n_states
 
         self.augmented_times = np.insert(times, t0, 0)
-        self.augmented_func = augment_system(func)
+        self.augmented_func = augment_system(func, self.n, self.m)
         self.sens_ic = self.make_sens_ic()
 
         self.cached_y = None
@@ -61,7 +61,7 @@ class ODEModel(object):
             derivatives (vector): derivatives of state and gradient
         """
 
-        dydt, ddt_dydp = self.augmented_func(Y[:self.n], t, p, Y[self.n:], self.n, self.m)
+        dydt, ddt_dydp = self.augmented_func(Y[:self.n], t, p, Y[self.n:])
         derivatives = np.concatenate([dydt,ddt_dydp])
         return derivatives
 
@@ -86,13 +86,10 @@ class ODEModel(object):
 
     def cached_simulate(self, parameters):
 
-        if np.all(np.array(parameters) == self.cached_parameters):
-            y = self.cached_y
-            sens = self.cached_sens
+        if np.array_equal(np.array(parameters), self.cached_parameters):
+            return self.cached_y, self.cached_sens
         else:
-            y,sens = self.simulate(np.array(parameters))
-
-        return y,sens
+            return self.simulate(np.array(parameters))
 
     def state(self,x):
         y, sens = self.cached_simulate(np.array(x,dtype=np.float64))
@@ -102,6 +99,29 @@ class ODEModel(object):
     def numpy_vsp(self,x, g):    
         numpy_sens = self.cached_simulate(np.array(x,dtype=np.float64))[1].reshape((self.n_states*len(self.times),len(x)))
         return numpy_sens.T.dot(g)
+
+    def make_node(self, x):
+        x = theano.tensor.as_tensor_variable(x)
+
+        return theano.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs_storage, output_storage):
+        x = inputs_storage[0]
+        out = output_storage[0]
+
+        # get the numerical solution of ODE states
+        out[0] = self.state(x)
+
+    def grad(self, inputs, output_grads):
+        x = inputs[0]
+        g = output_grads[0]
+
+        # pass the VSP when asked for gradient
+        grad_op = ODEGradop(self.numpy_vsp)
+        grad_op_apply = grad_op(x, g)
+
+        return [grad_op_apply]
+
 
 
 class ODEGradop(theano.Op):
@@ -121,34 +141,8 @@ class ODEGradop(theano.Op):
         out = output_storage[0]
         out[0] = self._numpy_vsp(x, g)       # get the numerical VSP
 
-class ODEop(theano.Op):
-
-    def __init__(self, ode_model):
-        self._state = ode_model.state
-        self._numpy_vsp = ode_model.numpy_vsp
-
-    def make_node(self, x):
-        x = theano.tensor.as_tensor_variable(x)
-
-        return theano.Apply(self, [x], [x.type()])
-
-    def perform(self, node, inputs_storage, output_storage):
-        x = inputs_storage[0]
-        out = output_storage[0]
-        
-        out[0] = self._state(x)               # get the numerical solution of ODE states
-
-    def grad(self, inputs, output_grads):
-        x = inputs[0]
-        g = output_grads[0]
-
-        grad_op = ODEGradop(self._numpy_vsp)  # pass the VSP when asked for gradient 
-        grad_op_apply = grad_op(x, g)
-        
-        return [grad_op_apply]
-
     
-def augment_system(ode_func):
+def augment_system(ode_func,t_n, t_m):
     '''Function to create augmented system.
 
     Take a function which specifies a set of differential equations and return
@@ -165,23 +159,23 @@ def augment_system(ode_func):
 
     #Shapes for the dydp dmatrix
     #TODO: Should this be int64 or other dtype?
-    t_n = tt.scalar('n', dtype = 'int64')
-    t_m = tt.scalar('m', dtype = 'int64')
+    # t_n = tt.scalar('n', dtype = 'int64')
+    # t_m = tt.scalar('m', dtype = 'int64')
 
     #Present state of the system
-    t_y = tt.dvector('y')
+    t_y = tt.vector('y', dtype=theano.config.floatX)
 
     #Parameter(s).  Should be vector to allow for generaliztion to multiparameter
     #systems of ODEs
-    t_p = tt.dvector('p')
+    t_p = tt.vector('p', dtype=theano.config.floatX)
 
     #Time.  Allow for non-automonous systems of ODEs to be analyzed
-    t_t = tt.dscalar('t')
+    t_t = tt.scalar('t', dtype=theano.config.floatX)
 
     #Present state of the gradients:
     #Will always be 0 unless the parameter is the inital condition
     #Entry i,j is partial of y[i] wrt to p[j]
-    dydp_vec= tt.dvector('dydp')
+    dydp_vec = tt.vector('dydp', dtype=theano.config.floatX)
 
     dydp = dydp_vec.reshape((t_n,t_m))
 
@@ -201,7 +195,7 @@ def augment_system(ode_func):
 
 
     system = theano.function(
-            inputs=[t_y, t_t, t_p, dydp_vec, t_n, t_m],
+            inputs=[t_y, t_t, t_p, dydp_vec],
             outputs=[f_tensor, ddt_dydp],
             on_unused_input='ignore')
 
